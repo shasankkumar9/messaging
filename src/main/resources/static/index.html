@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; }
+  #login { margin: 0 auto; width: min(480px, 100%); padding: 16px; box-sizing: border-box; }
+  #chat { display: none; flex-direction: column; height: 100dvh; width: min(480px, 100%); margin: 0 auto; padding: 16px; box-sizing: border-box; }
+  #log { flex: 1; overflow-y: auto; border: 1px solid #ccc; padding: 8px; margin-bottom: 8px; }
+  #online { font-size: 14px; margin-bottom: 8px; } #online span { margin-right: 12px; white-space: nowrap; }
+  #online span::before { content: "\25CF "; color: #2a2; }
+  .m { margin: 4px 0; } .m b { margin-right: 6px; } .m i { color: #888; font-size: 12px; }
+  form { display: flex; gap: 8px; } input { flex: 1; padding: 10px; font-size: 16px; } button { padding: 10px 16px; font-size: 16px; }
+</style>
+</head>
+<body>
+<div id="login">
+  <h2>Join chat</h2>
+  <form id="loginForm"><input id="name" placeholder="username" maxlength="30" autofocus><button>Join</button></form>
+  <p id="err" style="color:#c00"></p>
+</div>
+<div id="chat">
+  <h3 id="who"></h3>
+  <div id="online" aria-live="polite"></div>
+  <div id="log" aria-live="polite"></div>
+  <form id="msgForm"><input id="text" placeholder="message" maxlength="500" autocomplete="off"><button>Send</button></form>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let me;
+
+function show(m) {
+  const d = document.createElement('div'); d.className = 'm';
+  const b = document.createElement('b'); b.textContent = m.sender;
+  const t = document.createElement('span'); t.textContent = m.text;   // textContent: no HTML injection
+  const i = document.createElement('i'); i.textContent = ' ' + new Date(m.sentAt).toLocaleTimeString();
+  d.append(b, t, i); $('log').append(d); $('log').scrollTop = $('log').scrollHeight;
+}
+
+function showOnline(list) {
+  $('online').replaceChildren(...list.map(u => {
+    const s = document.createElement('span');
+    s.textContent = u.username + (u.username === me ? ' (you)' : '') + ' · ' + u.ip;
+    return s;
+  }));
+}
+
+$('loginForm').onsubmit = async e => {
+  e.preventDefault();
+  const r = await fetch('/api/users', { method: 'POST', headers: {'Content-Type': 'application/json'},
+                                        body: JSON.stringify({ username: $('name').value }) });
+  if (!r.ok) { $('err').textContent = (await r.json()).message || 'Invalid username'; return; }
+  me = await r.text();
+  $('login').style.display = 'none'; $('chat').style.display = 'flex'; $('who').textContent = 'You are ' + me;
+  (await (await fetch('/api/messages')).json()).forEach(show);
+  showOnline(await (await fetch('/api/online')).json());
+
+  // connect to whichever host served this page, so it works from any device on the LAN
+  const client = new StompJs.Client({ brokerURL: `ws://${location.host}/ws`, reconnectDelay: 2000 });
+  client.onConnect = () => {
+    client.subscribe('/topic/chat', f => show(JSON.parse(f.body)));
+    client.subscribe('/topic/online', f => showOnline(JSON.parse(f.body)));
+    client.publish({ destination: '/app/join', body: JSON.stringify({ username: me }) }); // also re-runs after a reconnect
+  };
+  client.activate();
+  $('msgForm').onsubmit = e => {
+    e.preventDefault();
+    if (!$('text').value.trim() || !client.connected) return;
+    client.publish({ destination: '/app/chat', body: JSON.stringify({ sender: me, text: $('text').value }) });
+    $('text').value = '';
+  };
+};
+</script>
+</body>
+</html>
